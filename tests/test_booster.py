@@ -217,7 +217,7 @@ class SelfCheckDuplicateRoutingTests(unittest.TestCase):
             suffix = f']({target})'
             incomplete = (
                 suffix,
-                f'<!-- [Hidden -->{suffix}',
+                f'Text <!-- [Hidden -->{suffix}',
                 f'`[Hidden`{suffix}',
                 rf'\[Escaped{suffix}',
                 rf'[Escaped close\{suffix}',
