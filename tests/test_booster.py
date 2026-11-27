@@ -850,6 +850,70 @@ class SelfCheckDuplicateRoutingTests(unittest.TestCase):
                             missing,
                         )
 
+    def test_uri_autolinks_do_not_supply_or_duplicate_routes(self):
+        target = 'references/operating-algorithm.md'
+        visible = f'[Workflow]({target})'
+        hidden = f'<https://example.test/[Workflow]({target})>'
+        self.assertEqual(self._check_bundled_body(hidden), (1, {'error': 'no bundled references'}))
+        status, report = self._check_bundled_body(f'{hidden} {visible}')
+        self.assertEqual((status, report['references_checked']), (0, [target]))
+
+        canonical = '[Canonical](../../../SKILL.md)'
+        hidden_canonical = f'<custom+scheme:example/{canonical}>'
+        self.assertEqual(self._check_registration_body(hidden_canonical),
+                         (1, {'error': 'Codex registration is missing its canonical skill link'}))
+        status, report = self._check_registration_body(f'{hidden_canonical} {canonical}')
+        self.assertEqual((status, report['codex_repo_registration']), (0, 'present_valid'))
+
+        path = 'references/example<xx:marker>.md'
+        self.assertEqual(b.plain_link_targets(f'[Workflow]({path})', r'\]\((references/[^)]+)\)'),
+                         [path])
+
+    def test_outer_list_items_bound_multiline_route_labels(self):
+        """Keep complete routes within an item and reject labels spanning items."""
+        routes = (
+            (self._check_bundled_body, 'references/operating-algorithm.md',
+             'no bundled references'),
+            (self._check_registration_body, '../../../SKILL.md',
+             'Codex registration is missing its canonical skill link'),
+        )
+        for check, target, missing_error in routes:
+            link = f'[Guide]({target})'
+            ending = f'continued]({target})'
+            visible = check(link)
+            self.assertEqual(visible[0], 0)
+            missing = (1, {'error': missing_error})
+            interrupted_labels = (
+                ('bullet siblings', ('- [Open', f'- Another item]({target})')),
+                ('ordered siblings', ('1. [Open', f'2. Another item]({target})')),
+                ('bullet interrupts paragraph', ('[Open', f'- Another item]({target})')),
+                ('first ordinal interrupts paragraph', ('[Open', f'1. {ending}')),
+                ('list starts at two after blank', (
+                    'Introduction.', '', '2. [Open', f'3. Another item]({target})',
+                )),
+            )
+            complete_labels = (
+                ('bullet item continuation', ('- [Open', f'  {ending}')),
+                ('ordered item continuation', ('1. [Open', f'   {ending}')),
+                ('item two continuation after blank', ('Introduction.', '', '2. [Open', f'   {ending}')),
+                ('noninitial ordinals in paragraph', ('[Open', '2. ordinary text', f'3. {ending}')),
+                ('lazy quote continuation', ('> [Open', ending)),
+                ('backtick in previous item', ('1. Before `', f'2. {link}`')),
+                ('inline HTML in previous item', ('1. Before <span title="', f'2. {link}">')),
+            )
+            same_item_code_span = ('1. Before `', f'   {link}`')
+            for newline in ('\n', '\r\n'):
+                for case, lines in interrupted_labels:
+                    with self.subTest(target=target, newline=newline, case=case, visible=False):
+                        self.assertEqual(check(newline.join(lines)), missing)
+                    with self.subTest(target=target, newline=newline, case=case, visible=True):
+                        self.assertEqual(check(newline.join((*lines, '', link))), visible)
+                for case, lines in complete_labels:
+                    with self.subTest(target=target, newline=newline, case=case):
+                        self.assertEqual(check(newline.join(lines)), visible)
+                with self.subTest(target=target, newline=newline, case='backticks in same item'):
+                    self.assertEqual(check(newline.join(same_item_code_span)), missing)
+
 
 class SelfCheckRootCliTests(unittest.TestCase):
     """Check root selection at the CLI boundary without a package fixture."""
