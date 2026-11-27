@@ -1,0 +1,38 @@
+{
+  "@context": "https://w3id.org/codemeta/4.0",
+  "@type": "SoftwareSourceCode",
+  "categories": [
+    "filesystem",
+    "search"
+  ],
+  "categoryAliases": [],
+  "code": "solutions/filesystem/search/find-child-directories-js/revisions/0001/find-js-8ffdf3b1.js",
+  "codeRepository": "https://github.com/QuillCrank/BoosterAI",
+  "codeSampleType": "full",
+  "code_sha256": "e37da6e6796af6fa1f26b110c431cc6966ee0a30df36826b30048cbfd38bdf47",
+  "description": "Find immediate child directories without traversing directory links",
+  "evidence_basis": "artifact-sha256",
+  "evidence_sha256": "818f0d7454cc446c7026d851e3e09e97e45f17d261b142bc66c766c008d94e46",
+  "format": "boosterai-source-v1",
+  "keywords": [
+    "directory",
+    "javascript",
+    "node"
+  ],
+  "license": "MIT",
+  "name": "find-child-directories-js",
+  "outcome": "success",
+  "programmingLanguage": "JavaScript",
+  "provenance": "Generalized owner-reviewed example; private source details excluded",
+  "publication": "generalized example; publication requires owner authorization",
+  "revision": 1,
+  "runtimePlatform": "Node.js 18+",
+  "savings_measured": false,
+  "tags": [
+    "directory",
+    "javascript",
+    "node"
+  ],
+  "test_summary": "Windows Node.js found the actual child directory case-insensitively, returned no match, and rejected invalid inputs.",
+  "title": "Find immediate child directories by exact name"
+}

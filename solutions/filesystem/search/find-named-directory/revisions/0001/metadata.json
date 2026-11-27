@@ -1,0 +1,40 @@
+{
+  "@context": "https://w3id.org/codemeta/4.0",
+  "@type": "SoftwareSourceCode",
+  "categories": [
+    "filesystem",
+    "search"
+  ],
+  "categoryAliases": [],
+  "code": "solutions/filesystem/search/find-named-directory/revisions/0001/find-directory-f904260f.py",
+  "codeRepository": "https://github.com/QuillCrank/BoosterAI",
+  "codeSampleType": "full",
+  "code_sha256": "bd3871a2867e7f8895e93f5e00a87e4673558bd4499fdc221c0df739f31cf6f6",
+  "description": "Find exact directory names under selected roots without following links",
+  "evidence_basis": "sanitized-summary-sha256",
+  "evidence_sha256": "b54ef0c1f30917ef63d5a07e0f09ec6a83bd3d3e09a096f26817e5b5ca5f21dd",
+  "format": "boosterai-source-v1",
+  "keywords": [
+    "directory",
+    "python",
+    "stdlib",
+    "windows"
+  ],
+  "license": "MIT",
+  "name": "find-named-directory",
+  "outcome": "success",
+  "programmingLanguage": "Python",
+  "provenance": "Generalized owner-reviewed example; private source details excluded",
+  "publication": "generalized example; publication requires owner authorization",
+  "revision": 1,
+  "runtimePlatform": "Python 3.10+",
+  "savings_measured": false,
+  "tags": [
+    "directory",
+    "python",
+    "stdlib",
+    "windows"
+  ],
+  "test_summary": "Windows Python CLI fixture found a case-insensitive directory match, reported an absent name, and marked a missing root incomplete.",
+  "title": "Find exact directory names under selected roots without following links"
+}

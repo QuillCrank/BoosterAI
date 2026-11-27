@@ -1,0 +1,20 @@
+{
+  "name": "booster-ai-local",
+  "interface": {
+    "displayName": "BoosterAI Project"
+  },
+  "plugins": [
+    {
+      "name": "booster-ai",
+      "source": {
+        "source": "local",
+        "path": "./plugins/booster-ai"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "format": "boosterai-relationships-v1",
+  "relationships": [
+    {
+      "derivedFrom": true,
+      "file": "solutions/filesystem/search/find-child-directories-js/revisions/0001/find-js-8ffdf3b1.js",
+      "relatedFile": "solutions/filesystem/search/find-named-directory/revisions/0002/find-directory-0a138fca.py",
+      "strength": 0.65
+    }
+  ]
+}

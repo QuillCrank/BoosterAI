@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QuillCrank/BoosterAI/blob/main/solutions/archive.schema.json",
+  "title": "BoosterAI experience archive profile",
+  "description": "A local profile inspired by Schema.org SoftwareSourceCode and CodeMeta; not a claim of full CodeMeta conformance.",
+  "oneOf": [{"$ref": "#/$defs/indexV2"}, {"$ref": "#/$defs/indexV3"}],
+  "$defs": {
+    "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+    "categoryPath": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}},
+    "indexV2": {
+      "type": "object",
+      "required": ["format", "entries", "categories", "tags"],
+      "additionalProperties": false,
+      "properties": {
+        "format": {"const": "boosterai-index-v2"},
+        "entries": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/entry"}},
+        "categories": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/categoryPath"}},
+        "tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}}
+      }
+    },
+    "indexV3": {
+      "type": "object",
+      "required": ["format", "entries", "categories", "tags", "relationships"],
+      "additionalProperties": false,
+      "properties": {
+        "format": {"const": "boosterai-index-v3"},
+        "entries": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/entry"}},
+        "categories": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/categoryPath"}},
+        "tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}},
+        "relationships": {"$ref": "#/$defs/relationships"}
+      }
+    },
+    "relationships": {"type": "array", "maxItems": 10000, "uniqueItems": true, "items": {"$ref": "#/$defs/relationship"}},
+    "relationship": {
+      "type": "object",
+      "description": "Weighted file relationship; when derivedFrom is true, file was derived from relatedFile. Search exposes the association in both directions.",
+      "required": ["file", "relatedFile", "strength", "derivedFrom"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^solutions/[a-z0-9._/-]+$"},
+        "relatedFile": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^solutions/[a-z0-9._/-]+$"},
+        "strength": {"type": "number", "minimum": 0, "maximum": 1},
+        "derivedFrom": {"type": "boolean"}
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": ["@context", "@type", "format", "name", "title", "description", "programmingLanguage", "runtimePlatform", "codeRepository", "codeSampleType", "license", "revision", "categories", "categoryAliases", "tags", "keywords", "code", "code_sha256", "evidence_sha256", "outcome", "test_summary", "provenance", "publication", "savings_measured"],
+      "additionalProperties": true,
+      "properties": {
+        "@context": {"const": "https://w3id.org/codemeta/4.0"},
+        "@type": {"const": "SoftwareSourceCode"},
+        "format": {"const": "boosterai-source-v1"},
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "programmingLanguage": {"type": "string", "minLength": 1, "maxLength": 80},
+        "runtimePlatform": {"type": "string", "minLength": 1, "maxLength": 100},
+        "codeRepository": {"enum": ["https://github.com/QuillCrank/BoosterAI"]},
+        "codeSampleType": {"const": "full"},
+        "license": {"const": "MIT"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 9999},
+        "categories": {"$ref": "#/$defs/categoryPath"},
+        "categoryAliases": {"type": "array", "maxItems": 30, "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}},
+        "tags": {"type": "array", "maxItems": 30, "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}},
+        "keywords": {"type": "array", "maxItems": 30, "uniqueItems": true, "items": {"$ref": "#/$defs/slug"}},
+        "code": {"type": "string", "pattern": "^solutions/[a-z0-9._/-]+$"},
+        "code_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evidence_basis": {"enum": ["sanitized-summary-sha256", "artifact-sha256"], "description": "Identifies the bytes hashed for the evidence digest; a digest does not authenticate the observation."},
+        "outcome": {"const": "success"},
+        "test_summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "provenance": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "publication": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "savings_measured": {"type": "boolean"}
+      }
+    }
+  }
+}

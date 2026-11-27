@@ -1,0 +1,40 @@
+{
+  "@context": "https://w3id.org/codemeta/4.0",
+  "@type": "SoftwareSourceCode",
+  "categories": [
+    "filesystem",
+    "testing"
+  ],
+  "categoryAliases": [],
+  "code": "solutions/filesystem/testing/owned-unittest-temp/revisions/0001/owned-temp-d039e626.py",
+  "codeRepository": "https://github.com/QuillCrank/BoosterAI",
+  "codeSampleType": "full",
+  "code_sha256": "d90206caeb1e824a6877961e5a6bee88f141172e4b7151b0e47632cc9f375c18",
+  "description": "Repository-local unittest fixtures with early cleanup and child temp isolation",
+  "evidence_basis": "sanitized-summary-sha256",
+  "evidence_sha256": "ec9f92754c30df4c4b2c3855c2bc3eb9c9d71d009c48ff42029f87de3afd93ca",
+  "format": "boosterai-source-v1",
+  "keywords": [
+    "cleanup",
+    "stdlib",
+    "temporary-files",
+    "unittest"
+  ],
+  "license": "MIT",
+  "name": "owned-unittest-temp",
+  "outcome": "success",
+  "programmingLanguage": "Python",
+  "provenance": "Generalized owner-reviewed example; private source details excluded",
+  "publication": "generalized example; publication requires owner authorization",
+  "revision": 1,
+  "runtimePlatform": "Python 3.10+",
+  "savings_measured": false,
+  "tags": [
+    "cleanup",
+    "stdlib",
+    "temporary-files",
+    "unittest"
+  ],
+  "test_summary": "Windows Python fixture verified isolated parent and child temporary files plus cleanup after successful and failed setup.",
+  "title": "Repository-local unittest fixtures with early cleanup and child temp isolation"
+}

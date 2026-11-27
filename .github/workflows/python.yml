@@ -1,0 +1,81 @@
+name: Python verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  selected-tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+        include:
+          - os: ubuntu-22.04
+            python: '3.10'
+          - os: windows-2022
+            python: '3.10'
+    env:
+      TEMP: ${{ github.workspace }}/_temp-files
+      TMP: ${{ github.workspace }}/_temp-files
+      TMPDIR: ${{ github.workspace }}/_temp-files
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Fetch the exact authorized repository revision
+        shell: bash
+        run: |
+          python -I -S -B - <<'PY'
+          import os, re, stat, subprocess, tempfile
+          from pathlib import Path
+
+          repositories = {
+              'QuillCrank/boosterai': 'QuillCrank/BoosterAI',
+              'quillcrank/boosterai': 'QuillCrank/BoosterAI',
+          }
+          repository = repositories.get(os.environ.get('GITHUB_REPOSITORY', '').lower())
+          if repository is None or os.environ.get('GITHUB_REPOSITORY_OWNER_ID') != '57841014':
+              raise ValueError('unexpected BoosterAI repository identity')
+          revision = os.environ['GITHUB_SHA']
+          if re.fullmatch(r'[0-9a-f]{40}', revision) is None:
+              raise ValueError('invalid revision')
+          root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          if not root.is_dir():
+              raise ValueError('runner workspace is missing')
+          base = root / '_temp-files'
+          base.mkdir(exist_ok=True)
+          info = base.lstat()
+          if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400 or base.resolve().parent != root:
+              raise ValueError('unsafe temporary root')
+          with tempfile.TemporaryDirectory(prefix='ci-bootstrap-', dir=base) as operation:
+              environment = dict(os.environ)
+              environment.update({name: operation for name in ('TEMP', 'TMP', 'TMPDIR')})
+              environment['GIT_CONFIG_NOSYSTEM'] = '1'
+              environment['GIT_CONFIG_GLOBAL'] = str(Path(operation) / 'no-global-config')
+              commands = [
+                  ['git', 'init', '.'],
+                  ['git', 'remote', 'add', 'origin', f'https://github.com/{repository}.git'],
+                  ['git', 'fetch', '--depth=1', '--no-tags', 'origin', revision],
+                  ['git', 'checkout', '--detach', 'FETCH_HEAD'],
+              ]
+              for command in commands:
+                  subprocess.run(command, cwd=root, env=environment, check=True)
+              checked = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root,
+                                       env=environment, capture_output=True,
+                                       text=True, check=True).stdout.strip()
+              if checked != revision:
+                  raise ValueError('checkout differs from the requested revision')
+          PY
+      - name: Check package and selected tests
+        shell: bash
+        env:
+          BOOSTERAI_CI_ALLOW_OFFICIAL_PYTHON: ${{ matrix.python == '3.10' && startsWith(matrix.os, 'windows') && '1' || '0' }}
+        run: python -I -S -B tests/ci_suite_c4e2b179.py --python '${{ matrix.python }}'

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+/_temp-files/
+.test-work/
+.booster-tmp/
+.booster-quarantine/
+.booster-gc.lock
+.tooldeps/
+.solution-candidates/
+_boosterAI/
