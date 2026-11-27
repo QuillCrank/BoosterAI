@@ -1,0 +1,19 @@
+{
+  "name": "booster-ai",
+  "version": "0.2.4",
+  "description": "Apply and verify the bundled BoosterAI skill and harness in an authorized project.",
+  "author": {
+    "name": "QuillCrank"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/QuillCrank/BoosterAI",
+  "skills": "./skills/",
+  "onboardingSkill": "./skills/booster-ai-workflow/SKILL.md",
+  "interface": {
+    "displayName": "BoosterAI",
+    "shortDescription": "Plan and verify project work.",
+    "longDescription": "Use the BoosterAI skill and harness in an authorized project with a self-contained runtime.",
+    "developerName": "QuillCrank",
+    "category": "Productivity"
+  }
+}
