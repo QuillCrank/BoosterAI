@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import stat
 import sys
+import unicodedata
 import uuid
 
 
@@ -393,64 +394,326 @@ def schema_status(root):
     }
 
 def plain_link_targets(text, target_pattern):
+    """Return eligible links from a document in the supported source profile."""
+    routes, _ = scan_link_blocks(text, target_pattern, 0, [128 * len(text)])
+    return routes
+
+
+def scan_link_blocks(text, target_pattern, quote_depth, quote_budget):
     """Collect complete plain inline links with visible, balanced label brackets.
 
-    Treat inline markup as opaque label content and keep it out of destinations.
-    Blank lines, ATX headings, thematic breaks, Setext underlines, fences and
-    block comments bound supported link labels.
+    Treat inline markup and URI autolinks as opaque. Raw HTML can cross
+    soft line breaks within a paragraph. Bare destinations keep their bytes.
+    Blank lines, ATX headings, thematic breaks, Setext underlines, fences,
+    block comments and recognized HTML blocks bound supported link labels.
     Apply the caller-specific path pattern after recognizing a supported link.
     Backtick spans may cross soft line breaks up to a recognized block start.
     Indented code at the start, after a blank, or after a completed top-level
-    ATX heading, thematic break, fence or standalone comment is opaque.
-    Recognize a single letter-leading Setext title at a known block start or
-    directly after a supported completed top-level block.
-    Leave possible list content and paragraph continuations visible.
-    The source profile does not normalize Markdown container prefixes.
+    ATX heading, thematic break, fence or supported HTML block is opaque.
+    Recognize contiguous letter-leading Setext title lines at a known block
+    start or directly after a supported completed top-level block.
+    A complete generic HTML tag opens a block only at a recognized block start.
+    Leave possible list content and paragraph continuations visible. Use the
+    current item's content indentation to identify its reference definitions
+    and HTML blocks. Resume at the enclosing item after dedent.
+    Recognized list items start separate inline scopes. Empty items and
+    ordered markers other than 1 do not start a list within an open paragraph.
+    Reuse the same profile inside marked block quotes, including list-owned
+    quotes, and their plain paragraph continuations, up to 64 levels.
+    Return routes and the quote nesting of an
+    open final paragraph, or None if the final leaf cannot continue.
     """
+    quote_budget[0] -= len(text)
+    require(quote_budget[0] >= 0, 'Markdown quote processing limit exceeded')
     atx_start = r'\#{1,6}(?=[ \t]|\r?$)'
+    atx_heading = rf'{atx_start}(?P<heading_text>[^\r\n]*)'
     thematic_line = r'(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})'
     setext_line = r'(?:=+|-+)[ \t]*'
-    setext_heading = rf'[ ]{{0,3}}(?P<setext_text>[^\W\d_][^\r\n]*)\r?\n[ ]{{0,3}}{setext_line}(?=\r?$)'
+    title_line = r'[^\W\d_][^\r\n]*'
+    setext_heading = (
+        rf'[ ]{{0,3}}(?P<setext_text>{title_line}(?:\r?\n[ ]{{0,3}}{title_line})*)'
+        rf'\r?\n[ ]{{0,3}}{setext_line}(?=\r?$)'
+    )
     separator_line = rf'(?:{thematic_line}|{setext_line})(?=\r?$)'
     fence_line = r'(?:`{3,}[^`\r\n]*|~{3,}[^\r\n]*)(?=\r?$)'
-    def compile_markup(block_start):
+    fence_start = re.compile(fence_line, re.MULTILINE)
+    fence_marker = re.compile(r'`{3,}|~{3,}')
+    raw_html_tag = r'(?ai:pre|script|style|textarea)'
+
+    # CommonMark 0.31.2 type 6 tags end at the first blank line.
+    block_html_tags = (
+        'address article aside base basefont blockquote body caption center col '
+        'colgroup dd details dialog dir div dl dt fieldset figcaption figure footer '
+        'form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend '
+        'li link main menu menuitem nav noframes ol optgroup option p param search '
+        'section summary table tbody td tfoot th thead title tr track ul'
+    ).split()
+    block_html_tag = '(?ai:' + '|'.join(block_html_tags) + ')'
+    end_of_line = r'[^\r\n]*(?:\r?\n|\Z)'
+    blank_line = r'(?=^[ \t]*\r?(?:\n|\Z))'
+    html_blocks = (
+        (rf'<{raw_html_tag}(?=[ \t>]|\r?$)', rf'</{raw_html_tag}>{end_of_line}'),
+        (r'<!--', rf'-->{end_of_line}'),
+        (r'<\?', rf'\?>{end_of_line}'),
+        (r'<![A-Za-z]', rf'>{end_of_line}'),
+        (r'<!\[CDATA\[', rf'\]\]>{end_of_line}'),
+        (rf'</?{block_html_tag}(?=[ \t>]|/>|\r?$)', blank_line),
+    )
+    tag_name = r'[A-Za-z][A-Za-z0-9-]*'
+    attribute_name = r'[A-Za-z_:][A-Za-z0-9_.:-]*'
+    unquoted_value = r"""[^ \t\r\n"'=<>`]+"""
+    attribute_value = rf"""(?:"[^"\r\n]*"|'[^'\r\n]*'|{unquoted_value})"""
+    attribute = rf'[ \t]+{attribute_name}(?:[ \t]*=[ \t]*{attribute_value})?'
+    open_tag_body = rf'{tag_name}(?:{attribute})*[ \t]*/?>'
+    closing_tag = rf'</{tag_name}[ \t]*>'
+    generic_open = rf'<(?!{raw_html_tag}(?![A-Za-z0-9-])){open_tag_body}'
+    standalone_html_start = rf'(?:{generic_open}|{closing_tag})[ \t]*(?=\r?$)'
+    standalone_html = rf'[ ]{{0,3}}{standalone_html_start}.*?(?:{blank_line}|\Z)'
+    quote_content = r'>[^\r\n]*'
+    quote_row = re.compile(quote_content)
+    marked_quote_line = rf'[ ]{{0,3}}{quote_content}'
+    quote_prefix = re.compile(r'^[ ]{0,3}>[ \t>]*', re.MULTILINE)
+    html_start = '(?:' + '|'.join(opener for opener, _ in html_blocks) + ')'
+    item_html_start = re.compile(rf'{html_start}|{standalone_html_start}', re.MULTILINE)
+    item_html_blocks = tuple(
+        (re.compile(opener, re.MULTILINE), None if end == blank_line else re.compile(end))
+        for opener, end in html_blocks
+    )
+    interrupting_marker = r'(?:[-+*]|0{0,8}1[.)])[ \t]+(?=[^ \t\r\n])'
+    interrupting_item = re.compile(interrupting_marker)
+    lazy_boundary = rf'(?:[ \t]*(?:\r?\n|\Z)|[ ]{{0,3}}(?:>|{atx_start}|{html_start}|{interrupting_marker}|{separator_line}|{fence_line}))'
+    lazy_lines = re.compile(rf'(?:\r?\n(?!{lazy_boundary})[^\r\n]*)+', re.MULTILINE)
+    paragraph_boundary = re.compile(lazy_boundary, re.MULTILINE)
+    marked_lines = re.compile(rf'(?:\r?\n{marked_quote_line})+')
+    list_marker = r'(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|\r?$)'
+    standalone_start = re.compile(rf'(?:[ ]{{0,3}}{list_marker}|{standalone_html})')
+    item_atx = re.compile(atx_heading, re.MULTILINE)
+    item_setext = re.compile(
+        rf'(?P<setext_text>{title_line})\r?\n(?P<padding>[ \t]*){setext_line}(?=\r?$)', re.MULTILINE
+    )
+    # A complete reference definition contains metadata, not inline routes.
+    reference_label = r'\[(?P<reference_label>(?:\\[^\r\n]|[^\\\[\]\r\n]){1,999})\]:[ \t]*'
+    item_reference = re.compile(reference_label)
+    reference_destination = (
+        r'(?:<(?:\\[^\r\n]|[^<>\r\n\\])*>'
+        r'|(?P<bare_reference>[^<\x00-\x20\x7f][^\x00-\x20\x7f]*))'
+    )
+    reference_fields = re.compile(rf'{reference_destination}(?P<title_space>[ \t]*)')
+    reference_end = re.compile(r'[ \t]*(?:\r?\n|\Z)')
+    title_closers = {'"': '"', "'": "'", '(': ')'}
+    title_tokens = re.compile(r"""\\[\\'"()]|['"()]|\r?\n|\r""")
+    item_marker = re.compile(rf'(?P<marker>{list_marker})(?P<padding>[ \t]*)', re.MULTILINE)
+    line_ending = re.compile(r'\r?\n')
+    physical_line = re.compile(r'[^\r\n]*(?:\r\n?|\n|\Z)')
+    indentation = re.compile(r'[ \t]*')
+    reference_delimiter = re.compile(r'\\[\\()]|[()]')
+
+    def balanced_reference_destination(destination):
+        """Check nesting in a bare destination, ignoring escaped delimiters."""
+        depth = 0
+        for delimiter in reference_delimiter.finditer(destination):
+            if delimiter.group() == '(':
+                depth += 1
+            elif delimiter.group() == ')':
+                depth -= 1
+                if depth < 0:
+                    return False
+        return depth == 0
+
+    def reference_continuation(line_start, content_indent, *, open_title=False):
+        """Find the next field or an open title's lazy continuation in this leaf."""
+        padding = indentation.match(text, line_start)
+        position = padding.end()
+        width = len(padding.group().expandtabs(4))
+        relative_indent = width - content_indent
+        if relative_indent < 0 and (not open_title or (
+                item_marker.match(text, position) and width <= item_base(width) + 3)):
+            return None
+        if reference_end.match(text, position) or (relative_indent <= 3 and paragraph_boundary.match(text, position)):
+            return None
+        return position
+
+    def read_reference_title(position, content_indent):
+        """Consume a complete title without crossing a blank line or leaf boundary."""
+        delimiter = title_closers.get(text[position:position + 1])
+        if delimiter is None:
+            return None
+        for token in title_tokens.finditer(text, position + 1):
+            value = token.group()
+            if value == delimiter:
+                ending = reference_end.match(text, token.end())
+                return ending.end() if ending is not None else None
+            if value == '\r' or (value == '(' and delimiter == ')'):
+                return None
+            if value.endswith('\n') and reference_continuation(token.end(), content_indent, open_title=True) is None:
+                return None
+        return None
+
+    def read_reference_definition(head, content_indent):
+        """Return the end of complete metadata, leaving malformed title text visible."""
+        label = head.group('reference_label')
+        if (len(label) > 999
+                or all(char in '\t\f' or unicodedata.category(char) == 'Zs' for char in label)):
+            return None
+        field_start = head.end()
+        if (newline := line_ending.match(text, field_start)) is not None:
+            field_start = reference_continuation(newline.end(), content_indent)
+            if field_start is None:
+                return None
+        fields = reference_fields.match(text, field_start)
+        if fields is None or not balanced_reference_destination(fields.group('bare_reference') or ''):
+            return None
+        ending = reference_end.match(text, fields.end())
+        if ending is None:
+            return read_reference_title(fields.end(), content_indent) if fields.group('title_space') else None
+        title_start = reference_continuation(ending.end(), content_indent)
+        if title_start is not None:
+            title_end = read_reference_title(title_start, content_indent)
+            if title_end is not None:
+                return title_end
+        return ending.end()
+
+    def heading_at_item_start(position, content_indent):
+        """Find a supported heading immediately after an outer item's marker."""
+        heading = item_atx.match(text, position)
+        if heading is not None:
+            return heading, 'heading_text'
+        heading = item_setext.match(text, position)
+        if heading is not None:
+            width = len(heading.group('padding').expandtabs(4))
+            if content_indent <= width <= content_indent + 3:
+                return heading, 'setext_text'
+        return None, None
+
+    def unquote(match):
+        """Remove one quote marker and its optional padding column."""
+        prefix = match.group().expandtabs(4)
+        return prefix[prefix.index('>') + 1:].removeprefix(' ')
+
+    def continues_paragraph(marked, paragraph_depth):
+        """Check whether new marked lines can only extend the known paragraph."""
+        for line in re.split(r'\r?\n', marked.removeprefix('\r\n').removeprefix('\n')):
+            for _ in range(paragraph_depth):
+                marker = quote_prefix.match(line)
+                if marker is None:
+                    break
+                line = unquote(marker) + line[marker.end():]
+            if paragraph_boundary.match(line):
+                return False
+        return True
+
+    def single_paragraph_depth(body):
+        """Identify a single ordinary paragraph line after its nested markers."""
+        if '\r' in body or '\n' in body:
+            return None
+        depth = 0
+        while (marker := quote_prefix.match(body)) is not None:
+            depth += 1
+            if depth + quote_depth >= 64:
+                return None
+            body = unquote(marker) + body[marker.end():]
+        if (re.match(r'[ ]{0,3}[^ \t\r\n]', body)
+                and not paragraph_boundary.match(body) and not standalone_start.match(body)):
+            return depth
+        return None
+
+    def read_quote(quote, position, prefix, marked_rows, lazy_rows, owner_indent):
+        """Read marked content and only eligible lazy lines in the same quote."""
+        require(quote_depth < 64, 'Markdown quote depth limit exceeded')
+        body = prefix.sub(unquote, quote)
+        parts = [body]
+        paragraph_depth = single_paragraph_depth(body) if lazy_rows.match(text, position) else None
+        pending = paragraph_depth is not None
+        routes = []
+        if not pending:
+            routes, paragraph_depth = scan_link_blocks(body, target_pattern, quote_depth + 1, quote_budget)
+        while paragraph_depth is not None:
+            continuation = lazy_rows.match(text, position)
+            if continuation is None:
+                break
+            body = continuation.group()
+            if owner_indent:
+                # Remove the list's structural columns from unmarked prose.
+                body = re.sub(r'^[ \t]+', lambda pad: pad.group().expandtabs(4)[owner_indent:],
+                              body, flags=re.MULTILINE)
+            parts.append(body)
+            position = continuation.end()
+            pending = True
+            marked = marked_rows.match(text, position)
+            if marked is not None:
+                body = prefix.sub(unquote, marked.group())
+                parts.append(body)
+                position = marked.end()
+                if not continues_paragraph(body, paragraph_depth):
+                    routes, paragraph_depth = scan_link_blocks(''.join(parts), target_pattern,
+                                                               quote_depth + 1, quote_budget)
+                    pending = False
+        if pending:
+            routes, paragraph_depth = scan_link_blocks(''.join(parts), target_pattern,
+                                                       quote_depth + 1, quote_budget)
+        return routes, paragraph_depth, position
+
+    def compile_markup(block_start, html_indent, sibling_start=r'(?!)', reference_indent=r'[ ]{0,3}',
+                       item_indent=r'[ ]{0,3}', item_fence_indent=r'(?!)', heading_indent=r'[ ]{0,3}',
+                       item_html_indent=r'(?!)', quote_indent=r'[ ]{0,3}'):
+        """Match markup with the current block, HTML and sibling boundaries."""
+        # Some terminators overlap the opening marker, as in <!--> and <?>.
+        html_block = '|'.join(rf'(?={opener}).*?(?:{end}|\Z)' for opener, end in html_blocks)
+        soft_newline = rf"""
+            \r?\n(?!
+                [ \t]*(?:\r?\n|\Z)
+                | {html_indent}{html_start}
+                | {sibling_start}
+                | [ ]{{0,3}}(?:
+                    > | {atx_start}
+                    | {interrupting_marker}
+                    | {separator_line}
+                    | {fence_line}
+                )
+            )
+        """
+        optional_space = rf'[ \t]*(?:{soft_newline}[ \t]*)?'
+        required_space = rf'(?:[ \t]*{soft_newline}[ \t]*|[ \t]+)'
+        inline_value = rf"""(?:"(?:[^"\r\n]|{soft_newline})*"|'(?:[^'\r\n]|{soft_newline})*'|{unquoted_value})"""
+        inline_attribute = rf'{required_space}{attribute_name}(?:{optional_space}={optional_space}{inline_value})?'
+        inline_content = rf'(?:[^\r\n]|{soft_newline})'
         return re.compile(
             rf"""
-        ^[ ]{{0,3}}{atx_start}(?P<heading_text>[^\r\n]*)
+        ^{heading_indent}{atx_heading}
         | {block_start}{setext_heading}
+        | ^(?P<reference_padding>{reference_indent}){reference_label}
+        | (?P<item_html>^{item_html_indent}{html_start})
+        | (?P<item_standalone_html>^{item_html_indent}{standalone_html_start})
         | (?P<escape>\\[\\`<\[\]!])  # Escaped punctuation cannot open markup.
         | (?P<skip>
             (?P<indented_code>{block_start}{indented_code})
             | (?P<separator>^[ ]{{0,3}}{separator_line})
+            | (?P<html_block>^{html_indent}(?:{html_block})|{block_start}{standalone_html})
+            | (?P<item_fence>^{item_fence_indent}{fence_line})
             | ^[ ]{{0,3}}  # A fence must start on its own source line.
             (?P<fence>(?P<backtick_fence>`{{3,}})|~{{3,}})
             (?(backtick_fence)[^`\r\n]*|[^\r\n]*)  # Only tildes allow backticks in fence info.
             (?:\r?\n|\Z)
             .*?(?:^[ ]{{0,3}}(?P=fence)(?(backtick_fence)`*|~*)[ \t]*(?:\r?\n|\Z)|\Z)
             | (?P<ticks>`+)(?!`)
-            (?:
-                [^\r\n]
-                | \r?\n(?!  # Leave following blank lines and recognized blocks visible.
-                    [ \t]*(?:\r?\n|\Z)
-                    | [ ]{{0,3}}(?:
-                        <!-- | > | {atx_start}
-                        | (?:[-+*]|1[.)])[ \t]+(?=\S)
-                        | {separator_line}
-                        | {fence_line}
-                    )
-                )
-            )*?
+            {inline_content}*?
             (?<!`)(?P=ticks)(?!`)
             | (?P<block_comment>^[ ]{{0,3}})<!--.*?(?:-->|\Z)
-            | <!--  # Inline comments cannot span a blank or a recognized block start.
-            (?:[^\r\n]|\r?\n(?!
-                [ \t]*\r?\n
-                | [ ]{{0,3}}(?:<!--|{atx_start}|{separator_line}|{fence_line})
-            ))*?
-            (?:-->|\Z)
+            | (?P<inline_opaque>
+                  <[A-Za-z][A-Za-z0-9+.-]{{1,31}}:[^\x00-\x20\x7f<>]*>
+                | <{tag_name}(?:{inline_attribute})*{optional_space}/?>
+                | </{tag_name}{optional_space}>
+                | <!---?>
+                | <!--{inline_content}*?-->
+                | <\?{inline_content}*?\?>
+                | <![A-Za-z]{inline_content}*?>
+                | <!\[CDATA\[{inline_content}*?\]\]>
+            )
         )
-        | (?P<list_marker>^[ ]{{0,3}}(?:[-+*]|[0-9]{{1,9}}[.)])(?=[ \t]|\r?$))
-        | (?P<dedented>^[ \t]*\r?\n(?=[^ \t\r\n]))
+        | (?P<quote>^{quote_indent}{quote_content})
+        | (?P<list_marker>^{item_indent}{list_marker})
+          (?P<list_padding>[ \t]*)
+        | (?P<dedented>^[ \t]*\r?\n(?=(?P<next_indent>[ \t]*)[^ \t\r\n]))
         | `+  # An unmatched run remains ordinary text.
             """,
             flags=re.DOTALL | re.MULTILINE | re.VERBOSE,
@@ -458,26 +721,84 @@ def plain_link_targets(text, target_pattern):
 
     indented_line = r'(?:[ ]{4}|[ ]{0,3}\t)[ \t]*[^ \t\r\n][^\r\n]*'
     indented_code = rf'{indented_line}(?:\r?\n(?:[ \t]*\r?\n)*{indented_line})*'
-    top_level_markup = compile_markup(r'(?:\A|^[ \t]*\r?\n)')
-    list_markup = compile_markup(r'(?!)')
-    # A closing fence consumes its newline. Other blocks must end on their line.
+    top_level_markup = compile_markup(r'(?:\A|^[ \t]*\r?\n)', r'[ ]{0,3}')
+    list_markup = {}
+    list_quote_markup = {}
+    # Some completed blocks consume their newline. Others end on their line.
     after_block = r'(?:(?<=\n)|[ \t]*\r?\n)'
+    following_line = re.compile(after_block)
     adjacent_code = re.compile(after_block + indented_code)
     adjacent_setext = re.compile(after_block + setext_heading, re.MULTILINE)
+    adjacent_html = re.compile(after_block + standalone_html, re.MULTILINE | re.DOTALL)
 
     spans = []
+    quoted_routes = []
     start = 0
     paragraph_break = r'\r?\n[ \t]*\r?\n'
     block_break = '\0\n\n\0'
+    destination = re.compile(r'\]\(([^()\s\0]*)\)')
+    bare_destinations = destination.finditer(text)
+    next_destination = next(bare_destinations, None)
+    checked_span_count = 0
+    destination_labels = []
+
+    def scan_links(visible, labels):
+        """Collect supported routes and advance the supplied open labels."""
+        targets = []
+        destination_end = 0
+        for marker in re.finditer(r'!?\[|\]|' + paragraph_break, visible):
+            if marker.start() < destination_end:
+                continue
+            value = marker.group()
+            if value.endswith('['):
+                labels.append(value == '[')
+            elif value != ']':
+                labels.clear()
+            elif labels:
+                is_link = labels.pop()
+                match = destination.match(visible, marker.start())
+                if match is None:
+                    continue
+                route = re.fullmatch(target_pattern, match.group())
+                destination_end = match.end()
+                if is_link:
+                    # A link inside a label prevents that outer label from linking.
+                    labels.clear()
+                    if route is not None:
+                        targets.append(route[1])
+        return targets
 
     def append_opaque(token):
-        nonlocal start
+        """Emit an opaque span and return the next source position."""
+        nonlocal start, next_destination, checked_span_count
         escape = token.group('escape')
         if token.group('skip') is None and (escape is None or escape[-1] not in '[]!'):
-            return
+            return token.end()
+        if token.group('inline_opaque') is not None:
+            # A bare destination can contain HTML or autolink-like path characters.
+            while next_destination is not None and next_destination.end(1) <= token.start():
+                next_destination = next(bare_destinations, None)
+            if (next_destination is not None
+                    and start <= next_destination.start()
+                    and next_destination.start(1) <= token.start()):
+                # Advance label state only through spans added since the last
+                # possible destination. This point is immediately before its ].
+                spans.append(text[start:next_destination.start()])
+                start = next_destination.start()
+                scan_links(''.join(spans[checked_span_count:]), destination_labels)
+                checked_span_count = len(spans)
+                if destination_labels:
+                    if destination_labels.pop():
+                        destination_labels.clear()
+                    # Continue after the real destination, not the markup lookalike.
+                    spans.append(text[start:next_destination.end()])
+                    checked_span_count = len(spans)
+                    start = next_destination.end()
+                    return start
         spans.append(text[start:token.start()])
         if (token.group('indented_code') is not None or token.group('separator') is not None
                 or token.group('fence') is not None
+                or token.group('html_block') is not None
                 or token.group('block_comment') is not None
                 or re.search(paragraph_break, token.group())):
             spans.append(block_break)
@@ -485,83 +806,359 @@ def plain_link_targets(text, target_pattern):
             # Opaque content keeps label brackets apart from any destination.
             spans.append('\0')
         start = token.end()
+        return start
 
     def append_heading(token, heading_start, heading_end):
         """Scan a heading's inline content with label boundaries on both sides."""
         nonlocal start
         spans.extend((text[start:token.start()], block_break))
         start = heading_start
-        for inline in markup.finditer(text, start, heading_end):
-            append_opaque(inline)
+        inline_position = heading_start
+        while (inline := markup.search(text, inline_position, heading_end)) is not None:
+            inline_position = append_opaque(inline)
         spans.extend((text[start:heading_end], block_break))
         start = token.end()
 
     markup = top_level_markup
+    list_indents = [0]
     position = 0
+    last_block_end = 0
+    last_definition_end = -1
+    quoted_paragraph_depth = None
+
+    def follows_paragraph(line_start):
+        """Check the previous line's prose after a marker or block boundary."""
+        if line_start <= last_block_end:
+            return False
+        previous_start = text.rfind('\n', 0, line_start - 1) + 1
+        return bool(text[max(previous_start, last_block_end):line_start - 1].strip(' \t\r'))
+
+    def item_base(width):
+        """Return the deepest open item's content column containing this indentation."""
+        return next(indent for indent in reversed(list_indents) if indent <= width)
+
+    def indent_range(first, last):
+        """Match absolute columns, using four-column tab stops."""
+        choices = []
+        for stops in range(first // 4, last // 4 + 1):
+            partial_start = max(0, first - 4 * stops)
+            partial_end = min(3, last - 4 * stops)
+            stops_pattern = rf'(?:[ ]{{4}}|[ ]{{0,3}}\t){{{stops}}}' if stops else ''
+            choices.append(rf'{stops_pattern}[ ]{{{partial_start},{partial_end}}}')
+        return '(?:' + '|'.join(choices) + ')'
+
+    def at_item_indent(indent):
+        """Close deeper items and restore the inline boundaries of the remaining item."""
+        nonlocal markup
+        while list_indents[-1] > indent:
+            list_indents.pop()
+        if len(list_indents) == 1:
+            markup = top_level_markup
+            return
+        key = tuple(list_indents)
+        if key not in list_markup:
+            content_indent = list_indents[-1]
+            ancestor_block = rf'(?:>|{list_marker}|{fence_line}|{atx_start}|{html_start}|{separator_line})'
+            ancestor = '|'.join(
+                indent_range(base, min(base + 3, content_indent - 1)) + ancestor_block
+                for base in list_indents[:-1]
+            )
+            current = indent_range(content_indent, content_indent + 3)
+            nested = rf'{current}(?:>|{interrupting_marker}|{fence_line}|{atx_start}|{html_start}|{separator_line})'
+            headings = '|'.join(indent_range(base, base + 3) for base in list_indents)
+            boundaries = f'(?:{ancestor}|{nested})'
+            list_markup[key] = compile_markup(
+                r'(?!)', '', boundaries, reference_indent=r'[ \t]*',
+                item_indent=r'[ \t]*', item_fence_indent=r'[ \t]*', heading_indent=f'(?:{headings})',
+                item_html_indent=f'(?:{headings})', quote_indent=f'(?:{headings})',
+            )
+            list_quote_markup[key] = (
+                re.compile(rf'^{current}>[ \t>]*', re.MULTILINE),
+                re.compile(rf'(?:\r?\n{current}{quote_content})+'),
+                re.compile(rf'(?:\r?\n(?!{lazy_boundary}|{boundaries})[^\r\n]*)+', re.MULTILINE),
+            )
+        markup = list_markup[key]
+
+    def open_items(parent_indent, content_indents):
+        """Replace ended items and compile only the active leaf's boundaries."""
+        parent_depth = list_indents.index(parent_indent) + 1
+        require(parent_depth + len(content_indents) <= 65, 'Markdown list nesting limit exceeded')
+        list_indents[parent_depth:] = content_indents
+        at_item_indent(list_indents[-1])
+
+    def read_item_code(position, minimum_indent):
+        """Skip an indented code block from a known first content line."""
+        end = physical_line.match(text, position).end()
+        next_line = end
+        while next_line < len(text):
+            padding = indentation.match(text, next_line)
+            if (blank := line_ending.match(text, padding.end())) is not None:
+                next_line = blank.end()
+                continue
+            if len(padding.group().expandtabs(4)) < minimum_indent:
+                break
+            end = next_line = physical_line.match(text, padding.end()).end()
+        return end
+
+    def read_item_fence(position, content_indent):
+        """Skip a fence through its compatible closer or the owning item's dedent."""
+        marker = fence_marker.match(text, position).group()
+        closer = re.compile(rf'{re.escape(marker[0])}{{{len(marker)},}}[ \t]*(?:\r?\n|\Z)')
+        position = physical_line.match(text, position).end()
+        while position < len(text):
+            padding = indentation.match(text, position)
+            width = len(padding.group().expandtabs(4))
+            if width < content_indent and reference_end.match(text, padding.end()) is None:
+                break
+            if content_indent <= width <= content_indent + 3:
+                if (end := closer.match(text, padding.end())) is not None:
+                    return end.end()
+            position = physical_line.match(text, padding.end()).end()
+        return position
+
+    def read_item_html(position, content_indent):
+        """Skip an accepted HTML start to its delimiter, blank or owning dedent."""
+        closer = next((end for opener, end in item_html_blocks if opener.match(text, position)), None)
+        while position < len(text):
+            end = physical_line.match(text, position).end()
+            if closer is not None and closer.search(text, position, end) is not None:
+                return end
+            position = end
+            padding = indentation.match(text, position)
+            if reference_end.match(text, padding.end()) is not None:
+                if closer is None:
+                    break
+            elif len(padding.group().expandtabs(4)) < content_indent:
+                break
+        return position
+
+    def append_adjacent_item_code(position):
+        """Exclude indented code immediately after a completed item block."""
+        nonlocal start
+        if len(list_indents) == 1 or (line := following_line.match(text, position)) is None:
+            return position
+        padding = indentation.match(text, line.end())
+        width = len(padding.group().expandtabs(4))
+        content_indent = item_base(width)
+        if width < content_indent + 4 or reference_end.match(text, padding.end()) is not None:
+            return position
+        at_item_indent(content_indent)
+        spans.extend((text[start:position], block_break))
+        start = read_item_code(line.end(), content_indent + 4)
+        return start
+
+    def append_quote(visible_start, marker_position, marker_column, owner_indent):
+        """Join the quote's marked lines while preserving its list ownership."""
+        nonlocal start, last_block_end, quoted_paragraph_depth
+        at_item_indent(owner_indent)
+        prefix, marked_rows, lazy_rows = (list_quote_markup[tuple(list_indents)] if owner_indent
+                                         else (quote_prefix, marked_lines, lazy_lines))
+        end = quote_row.match(text, marker_position).end()
+        following = marked_rows.match(text, end)
+        if following is not None:
+            end = following.end()
+        quote = ' ' * marker_column + text[marker_position:end]
+        routes, paragraph_depth, end = read_quote(quote, end, prefix, marked_rows, lazy_rows, owner_indent)
+        quoted_paragraph_depth = None if paragraph_depth is None else paragraph_depth + 1
+        spans.extend((text[start:visible_start], block_break))
+        quoted_routes.append((len(spans), routes))
+        start = last_block_end = end
+        return end
+
     while (token := markup.search(text, position)) is not None:
         position = token.end()
-        if token.group('list_marker') is not None:
-            # Keep possible list continuations visible until a definite dedent.
-            markup = list_markup
+        if token.group('reference_label') is not None:
+            line_start = token.start()
+            label_indent = len(token.group('reference_padding').expandtabs(4))
+            content_indent = item_base(label_indent)
+            definition_end = None
+            if not follows_paragraph(line_start) and content_indent <= label_indent <= content_indent + 3:
+                definition_end = read_reference_definition(token, content_indent)
+            if definition_end is None:
+                # Reconsider the line as visible text, including its inline markup.
+                position = line_start + 1
+                continue
+            spans.extend((text[start:line_start], block_break))
+            start = last_block_end = position = definition_end
+            last_definition_end = definition_end
+            at_item_indent(content_indent)
+            quoted_paragraph_depth = None
+            continue
+        if token.group('item_fence') is not None:
+            line_start = token.start()
+            padding = indentation.match(text, line_start)
+            width = len(padding.group().expandtabs(4))
+            content_indent = item_base(width)
+            if width > content_indent + 3:
+                # Too deep for a fence in the current item. Leave it to the
+                # ordinary inline scanner if it was not already indented code.
+                position = padding.end()
+                continue
+            at_item_indent(content_indent)
+            spans.extend((text[start:line_start], block_break))
+            start = position = read_item_fence(padding.end(), content_indent)
+            last_block_end = position = append_adjacent_item_code(position)
+            quoted_paragraph_depth = None
+            continue
+        standalone = token.group('item_standalone_html') is not None
+        if token.group('item_html') is not None or standalone:
+            line_start = token.start()
+            padding = indentation.match(text, line_start)
+            if standalone and (follows_paragraph(line_start) or line_start == last_definition_end):
+                # The tag stays inline in an open paragraph, including one
+                # whose opening reference definitions were already removed.
+                spans.extend((text[start:padding.end()], '\0'))
+                start = position
+                continue
+            content_indent = item_base(len(padding.group().expandtabs(4)))
+            at_item_indent(content_indent)
+            if not content_indent and not standalone:
+                # Let the existing root reader handle the dedented block.
+                position = line_start
+                continue
+            spans.extend((text[start:line_start], block_break))
+            start = position = read_item_html(padding.end(), content_indent)
+            last_block_end = position = append_adjacent_item_code(position)
+            quoted_paragraph_depth = None
+            continue
+        marker = token.group('list_marker')
+        separator = token.group('separator')
+        if separator is not None and separator.strip(' \t') == '-':
+            dash = separator.rstrip(' \t')
+            sibling = len(list_indents) > 1 and len(dash) - 1 < list_indents[-1]
+            if sibling or not follows_paragraph(token.start()):
+                # A lone dash outside the paragraph's leaf can open an empty item.
+                marker = dash
+        if marker is not None:
+            marker_indent = len(indentation.match(marker).group().expandtabs(4))
+            line_start = token.start()
+            parent_indent = item_base(marker_indent)
+            starts_container = parent_indent == list_indents[-1]
+            if (marker_indent > parent_indent + 3 or (starts_container and follows_paragraph(line_start)
+                    and interrupting_item.match(text, indentation.match(text, line_start).end()) is None)):
+                continue
+            marker_width = len(marker.expandtabs(4))
+            padding = len((marker + (token.group('list_padding') or '')).expandtabs(4)) - marker_width
+            has_content = position < len(text) and text[position] not in '\r\n'
+            content_indent = marker_width + (padding if has_content and 1 <= padding <= 4 else 1)
+            spans.extend((text[start:line_start], block_break))
+            start = position
+            content_indents = [content_indent]
+            # Consecutive markers at the start of an item open nested items on
+            # the same physical line, before any inline content is examined.
+            while has_content and 1 <= padding <= 4 and (inner := item_marker.match(text, position)) is not None:
+                marker_width = len(text[line_start:inner.end('marker')].expandtabs(4))
+                position = inner.end()
+                padding = len(text[line_start:position].expandtabs(4)) - marker_width
+                has_content = position < len(text) and text[position] not in '\r\n'
+                content_indent = marker_width + (padding if has_content and 1 <= padding <= 4 else 1)
+                start = position
+                content_indents.append(content_indent)
+            open_items(parent_indent, content_indents)
+            if has_content and 1 <= padding <= 4:
+                head = item_reference.match(text, position)
+                definition_end = None if head is None else read_reference_definition(head, content_indent)
+                if definition_end is not None:
+                    start = position = definition_end
+                    last_definition_end = definition_end
+                elif fence_start.match(text, position) is not None:
+                    start = position = read_item_fence(position, content_indent)
+                    position = append_adjacent_item_code(position)
+                elif item_html_start.match(text, position) is not None:
+                    start = position = read_item_html(position, content_indent)
+                    position = append_adjacent_item_code(position)
+                elif text[position] == '>':
+                    position = append_quote(position, position, content_indent, content_indent)
+                    if quoted_paragraph_depth is None:
+                        last_block_end = position = append_adjacent_item_code(position)
+                    continue
+                else:
+                    heading, field = heading_at_item_start(position, content_indent)
+                    if heading is not None:
+                        append_heading(heading, *heading.span(field))
+                        position = append_adjacent_item_code(heading.end())
+            elif has_content and padding > 4:
+                start = position = read_item_code(position, content_indent + 4)
+            elif not has_content and (newline := line_ending.match(text, position)) is not None:
+                if reference_end.match(text, newline.end()) is not None:
+                    # The marker already supplies the item's leading blank.
+                    # A second blank ends that item before the next leaf.
+                    at_item_indent(list_indents[-2])
+            last_block_end = position
+            quoted_paragraph_depth = None
             continue
         if token.group('dedented') is not None:
-            if markup is list_markup:
-                # Reconsider the blank as a block start outside the list.
-                markup = top_level_markup
+            width = len(token.group('next_indent').expandtabs(4))
+            if width < list_indents[-1]:
+                at_item_indent(item_base(width))
                 position = token.start()
+            elif list_indents[-1] and width >= list_indents[-1] + 4:
+                spans.extend((text[start:token.start()], block_break))
+                start = last_block_end = position = read_item_code(position, list_indents[-1] + 4)
             continue
+        quote = token.group('quote')
         heading_start, heading_end = token.span('heading_text')
         if heading_start < 0:
             heading_start, heading_end = token.span('setext_text')
-        completed_block = (
-            heading_start >= 0
-            or token.group('fence') is not None
-            or token.group('block_comment') is not None
-            or (token.group('separator') is not None
-                and re.fullmatch(thematic_line, token.group('separator').lstrip(' ')))
-        )
-        if completed_block and text[token.start()] not in ' \t':
-            # Only a definite column-zero block ends a possible list continuation.
-            markup = top_level_markup
-        if heading_start < 0:
-            append_opaque(token)
+        if quote is not None:
+            padding = indentation.match(text, token.start())
+            marker_column = len(padding.group().expandtabs(4))
+            position = append_quote(token.start(), padding.end(), marker_column, item_base(marker_column))
+            completed_block = quoted_paragraph_depth is None
         else:
-            append_heading(token, heading_start, heading_end)
+            completed_block = (
+                heading_start >= 0
+                or token.group('fence') is not None
+                or token.group('indented_code') is not None
+                or token.group('html_block') is not None
+                or token.group('block_comment') is not None
+                or (token.group('separator') is not None
+                    and re.fullmatch(thematic_line, token.group('separator').lstrip(' ')))
+            )
+            if completed_block and text[token.start()] not in ' \t':
+                # Only a definite column-zero block ends a possible list continuation.
+                at_item_indent(0)
+            if heading_start < 0:
+                position = append_opaque(token)
+            else:
+                width = len(indentation.match(text, token.start()).group().expandtabs(4))
+                at_item_indent(item_base(width))
+                append_heading(token, heading_start, heading_end)
+            if completed_block:
+                last_block_end = position
+                quoted_paragraph_depth = None
+        if completed_block and len(list_indents) > 1:
+            last_block_end = position = append_adjacent_item_code(position)
         if completed_block and markup is top_level_markup:
-            while (heading := adjacent_setext.match(text, position)) is not None:
-                append_heading(heading, *heading.span('setext_text'))
-                position = heading.end()
-            code = adjacent_code.match(text, position)
-            if code is not None:
-                start = position = code.end()
+            while True:
+                if (heading := adjacent_setext.match(text, position)) is not None:
+                    append_heading(heading, *heading.span('setext_text'))
+                    position = heading.end()
+                elif (html := adjacent_html.match(text, position)) is not None:
+                    spans.extend((text[start:position], block_break))
+                    start = position = html.end()
+                elif (code := adjacent_code.match(text, position)) is not None:
+                    start = position = code.end()
+                else:
+                    break
+                last_block_end = position
+                quoted_paragraph_depth = None
     spans.append(text[start:])
-    visible = ''.join(spans)
-
-    destination = re.compile(r'\]\(([^()\s\0]*)\)')
     targets = []
-    labels = []
-    destination_end = 0
-    for marker in re.finditer(r'!?\[|\]|' + paragraph_break, visible):
-        if marker.start() < destination_end:
-            continue
-        value = marker.group()
-        if value.endswith('['):
-            labels.append(value == '[')
-        elif value != ']':
-            labels.clear()
-        elif labels:
-            is_link = labels.pop()
-            match = destination.match(visible, marker.start())
-            if match is None:
-                continue
-            route = re.fullmatch(target_pattern, match.group())
-            destination_end = match.end()
-            if is_link:
-                # A link inside a label prevents that outer label from linking.
-                labels.clear()
-                if route is not None:
-                    targets.append(route[1])
-    return targets
+    first_span = 0
+    for boundary, routes in quoted_routes:
+        targets.extend(scan_links(''.join(spans[first_span:boundary]), []))
+        targets.extend(routes)
+        first_span = boundary
+    targets.extend(scan_links(''.join(spans[first_span:]), []))
+    tail = text[last_block_end:]
+    if re.search(r'\r?\n[ \t]*\Z', tail):
+        return targets, None
+    if last_definition_end == len(text) and not text.endswith('\n'):
+        # The final marked quote paragraph can still take a lazy line. A final
+        # newline here represents a marked blank line rather than an open leaf.
+        return targets, 0
+    return targets, 0 if tail.strip(' \t\r\n') else quoted_paragraph_depth
 
 
 def check_codex_entry(text, expected_fields):
