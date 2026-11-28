@@ -12,3 +12,13 @@ Overall product acceptance remains open. The next native feedback check
 must correlate an authorized run, its original hook event and one committed
 delivery with actual recipient processing. A different reviewer then verifies
 the repaired revision on the actual target.
+
+## Project-local index checkpoint
+
+An independent Windows project exercised creation, repeat refresh and
+update of the project-local index. After a standard-source change, refresh
+updated only that entry. The legacy and experience records were preserved,
+and all three entries passed the strict freshness check.
+
+The protected project was separately checked in read-only mode. Its
+existing writer prerequisites remain in effect.
