@@ -136,6 +136,12 @@
       "file": "solutions/filesystem/search/find-child-directories-js/revisions/0001/find-js-8ffdf3b1.js",
       "relatedFile": "solutions/filesystem/search/find-named-directory/revisions/0002/find-directory-0a138fca.py",
       "strength": 0.65
+    },
+    {
+      "derivedFrom": false,
+      "file": "solutions/filesystem/search/find-named-directory/revisions/0002/find-directory-0a138fca.py",
+      "relatedFile": "solutions/filesystem/testing/owned-unittest-temp/revisions/0001/owned-temp-d039e626.py",
+      "strength": 0.5
     }
   ],
   "tags": [
